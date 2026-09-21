@@ -26,7 +26,7 @@ DB_PATH = DATA_DIR / "rhcsa_simulator.db"
 
 # Exam configuration - v10 aligned
 DEFAULT_EXAM_DURATION = 180  # minutes (3 hours - real exam)
-DEFAULT_EXAM_TASKS = 21  # fixed paper: 15 Node 1 tasks + 6 Node 2 tasks
+DEFAULT_EXAM_TASKS = 20  # real exam is 20-25 tasks
 EXAM_TASK_RANGE = (20, 25)
 MAX_EXAM_SCORE = 300  # matches real exam
 EXAM_PASS_THRESHOLD = 0.70  # 70% to pass
@@ -85,10 +85,6 @@ TASK_CATEGORIES = [
 
 SUPPORTED_EXAM_VERSIONS = (9, 10)
 DEFAULT_EXAM_VERSION = 9
-
-# This private build reproduces the supplied practice paper exactly instead of
-# drawing random tasks from the upstream catalogue.
-EXACT_PAPER_MODE = True
 
 _active_exam_version = DEFAULT_EXAM_VERSION
 
@@ -297,5 +293,5 @@ RESULT_FILE_SUFFIX = ".json"
 MAX_STORED_RESULTS = 100
 
 # Version
-VERSION = "4.0.0"
-APP_NAME = "RHCSA EX200 v10 Exam Simulator"
+VERSION = "1.0.0"
+APP_NAME = "Krishan RHCSA v9 Simulator"
