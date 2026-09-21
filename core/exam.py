@@ -36,7 +36,8 @@ class ExamSession:
     """
 
     def __init__(self, task_count=None, timer_enabled=True, duration_minutes=None,
-                 reboot_simulation=None, gui_port=None, gui_bind='0.0.0.0'):
+                 reboot_simulation=None, gui_port=None, gui_bind='0.0.0.0',
+                 fixed_tasks=None):
         self.task_count = task_count or settings.DEFAULT_EXAM_TASKS
         # Task panel — the exam shows its questions in a window you keep
         # beside your terminals, so practising that is part of the point.
@@ -59,6 +60,7 @@ class ExamSession:
         self.timer = None
         self._injected_tasks = []
         self._setup_tasks = []
+        self.fixed_tasks = list(fixed_tasks) if fixed_tasks is not None else None
 
     def start(self):
         """Start the exam session."""
@@ -88,7 +90,10 @@ class ExamSession:
 
         # Generate domain-balanced tasks
         print("\nGenerating exam tasks...")
-        self.tasks = TaskRegistry.generate_exam(self.task_count, disk_budget=disk_budget)
+        if self.fixed_tasks is not None:
+            self.tasks = list(self.fixed_tasks)
+        else:
+            self.tasks = TaskRegistry.generate_exam(self.task_count, disk_budget=disk_budget)
 
         if not self.tasks:
             print(fmt.error("Error: Could not generate exam tasks"))
@@ -117,7 +122,8 @@ class ExamSession:
 
         # Sanity-check that setup actually put the box into each task's scenario
         # (no task should already be passing before the candidate starts).
-        self._sanity_check_tasks()
+        if self.fixed_tasks is None:
+            self._sanity_check_tasks()
 
         # Refresh the NFS server's exports so this exam starts clean.
         self._reprovision_nfs()
@@ -682,4 +688,24 @@ def run_exam_mode(gui_port=None, gui_bind='0.0.0.0'):
     finally:
         # The panel is a view of a running exam; once grading starts it is
         # showing a sheet nobody can act on any more.
+        session._stop_task_panel()
+
+
+def run_krishan_paper_mode(gui_port=None, gui_bind='0.0.0.0'):
+    """Run the deterministic, original-worded two-node RHCSA v9 paper."""
+    from tasks.krishan_paper import build_exam_tasks
+
+    tasks = build_exam_tasks()
+    session = ExamSession(
+        task_count=len(tasks), timer_enabled=True, duration_minutes=180,
+        reboot_simulation=False, gui_port=gui_port, gui_bind=gui_bind,
+        fixed_tasks=tasks)
+    session.start()
+    if not session.tasks:
+        session._stop_task_panel()
+        return None
+    _wait_for_submit(session)
+    try:
+        return session.validate_all()
+    finally:
         session._stop_task_panel()
