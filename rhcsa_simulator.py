@@ -23,33 +23,25 @@ from config import settings
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description=f'{settings.APP_NAME} v{settings.VERSION}',
+        description='Krishan RHCSA v9 deterministic two-node simulator',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Quick Start Examples:
-  %(prog)s --quick              5 random tasks (task panel in a window)
-  %(prog)s --quick lvm          5 LVM tasks
-  %(prog)s --exam               Full mock exam
-  %(prog)s --exam --no-gui      Same, terminal only
-  %(prog)s --exam-version 9     Simulate EX200 v9 (RHEL 9): adds containers
-  %(prog)s --learn              Domain-based study mode
-  %(prog)s --practice lvm       Practice LVM category
-  %(prog)s --adaptive           SM-2 driven weak-area practice
+        epilog="""Examples:
+  %(prog)s --link-node2 192.168.56.102
+  %(prog)s --prepare-lab
+  %(prog)s --exam
+  %(prog)s --exam --no-gui
         """
     )
 
-    parser.add_argument('--quick', nargs='?', const='all', metavar='CATEGORY',
-                        help='Quick practice (5 tasks). Optionally specify category.')
+    parser.set_defaults(quick=None, learn=None, practice=None, adaptive=False)
     parser.add_argument('--exam', action='store_true',
-                        help='Start mock exam immediately')
-    parser.add_argument('--learn', nargs='?', const='all', metavar='CATEGORY',
-                        help='Learn mode. Optionally specify category.')
-    parser.add_argument('--practice', metavar='CATEGORY',
-                        help='Start practice mode for a category')
-    parser.add_argument('--adaptive', action='store_true',
-                        help='Start adaptive practice (SM-2 driven)')
+                        help='Start the fixed 21-task mock exam (default)')
+    parser.add_argument('--link-node2', metavar='HOST',
+                        help='Link the disposable node-2 VM using SSH key authentication')
+    parser.add_argument('--prepare-lab', action='store_true',
+                        help='Prepare both disposable VMs for the fixed paper')
     parser.add_argument('--list-categories', action='store_true',
-                        help='List available categories and domains')
+                        help='List the fixed paper task categories')
     parser.add_argument('--export-code', action='store_true',
                         help='Print a portable progress code (backup) and exit')
     parser.add_argument('--import-code', metavar='CODE',
@@ -78,15 +70,7 @@ Quick Start Examples:
                              '(default 0.0.0.0, so a headless exam VM can be '
                              'read from your laptop; use 127.0.0.1 to keep it '
                              'local)')
-    # Which EX200 to simulate. v10 is the default because it is the current
-    # exam; v9 candidates get containers and MBR, and lose Flatpak and
-    # systemd timers.
-    parser.add_argument('--exam-version', type=int, metavar='N',
-                        choices=settings.SUPPORTED_EXAM_VERSIONS,
-                        default=settings.DEFAULT_EXAM_VERSION,
-                        help=f'EX200 version to simulate: '
-                             f'{" or ".join(str(v) for v in settings.SUPPORTED_EXAM_VERSIONS)} '
-                             f'(default {settings.DEFAULT_EXAM_VERSION})')
+    parser.set_defaults(exam_version=9)
     parser.add_argument('--version', action='version',
                         version=f'%(prog)s {settings.VERSION}')
 
@@ -255,24 +239,14 @@ def main():
 
     # Handle --list-categories without root
     if args.list_categories:
-        from tasks.registry import TaskRegistry
-        TaskRegistry.initialize()
-
+        from collections import Counter
+        from tasks.krishan_paper import build_exam_tasks
+        tasks = build_exam_tasks()
+        counts = Counter(task.category for task in tasks)
         print(f"\n{settings.APP_NAME} v{settings.VERSION}")
-        print(f"Available categories ({TaskRegistry.get_task_count()} tasks total):\n")
-
-        for domain_num in sorted(settings.EXAM_DOMAINS.keys()):
-            domain_name = settings.EXAM_DOMAINS[domain_num]
-            domain_cats = [
-                cat for cat, dom in settings.CATEGORY_TO_DOMAIN.items()
-                if dom == domain_num and cat in TaskRegistry.get_all_categories()
-            ]
-            if domain_cats:
-                print(f"  Domain {domain_num}: {domain_name}")
-                for cat in sorted(domain_cats):
-                    count = TaskRegistry.get_task_count(cat)
-                    print(f"    {cat}: {count} tasks")
-                print()
+        print(f"Fixed paper: {len(tasks)} tasks\n")
+        for category, count in sorted(counts.items()):
+            print(f"  {category}: {count}")
         return 0
 
     # Progress snapshot codes — operate only on the local results DB, so they
@@ -369,13 +343,37 @@ def main():
         pass
 
     # CLI quick modes
+    if args.link_node2:
+        from core import lab_machine
+        if not lab_machine.copy_key(args.link_node2, 'root'):
+            print("Could not copy the SSH key to node 2.", file=sys.stderr)
+            return 1
+        lab_machine.save_config(args.link_node2, 'root')
+        if not lab_machine.key_works():
+            print("The node-2 key link could not be verified.", file=sys.stderr)
+            return 1
+        print(f"Node 2 linked successfully: {args.link_node2}")
+        return 0
+
+    if args.prepare_lab:
+        from core.krishan_setup import prepare
+        ok, message = prepare()
+        print(message)
+        return 0 if ok else 1
+
+    unsupported = args.quick or args.learn or args.practice or args.adaptive
+    if unsupported:
+        print("This edition contains only the fixed Krishan RHCSA v9 paper.")
+        print("Run: rhcsa-simulator --exam")
+        return 2
+
     if args.quick:
         run_quick_practice(args.quick, gui_port=args.gui, gui_bind=args.gui_bind)
         return 0
 
     if args.exam:
-        from core.exam import run_exam_mode
-        run_exam_mode(gui_port=args.gui, gui_bind=args.gui_bind)
+        from core.exam import run_krishan_paper_mode
+        run_krishan_paper_mode(gui_port=args.gui, gui_bind=args.gui_bind)
         return 0
 
     if args.learn:
@@ -412,6 +410,12 @@ def main():
         from core.adaptive import run_adaptive_mode
         run_adaptive_mode(gui_port=args.gui, gui_bind=args.gui_bind)
         return 0
+
+    # With no mode selected, start the one fixed exam.  The original project's
+    # random/practice menus are intentionally not exposed in this edition.
+    from core.exam import run_krishan_paper_mode
+    run_krishan_paper_mode(gui_port=args.gui, gui_bind=args.gui_bind)
+    return 0
 
     # Note if a previous session's environment is still in place (expected —
     # exams deliberately leave the box as-is for review/disputes).
