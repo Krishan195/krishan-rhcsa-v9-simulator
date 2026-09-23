@@ -1,11 +1,11 @@
-"""Deterministic two-node RHCSA v9 mock paper.
+"""Krishan deterministic RHCSA v9 paper simulator.
 
-The task wording in this module is original.  It mirrors public EX200 v9
-objectives and a two-node practical-exam workflow without reproducing any
-third-party question paper.
+This module locks Exam Mode to the exact 21-question paper used for the
+practice session: 15 tasks for node1 and 6 tasks for node2.  The validators are
+read-mostly shell predicates; where a practical proof is useful, they only run
+safe verification commands.
 """
 
-import os
 import subprocess
 from dataclasses import dataclass
 
@@ -37,7 +37,7 @@ def _run(script, remote=False, timeout=30):
 
 
 class PaperTask(BaseTask):
-    """Fixed task whose checks are shell predicates (exit 0 means pass)."""
+    """Fixed task whose shell checks return exit 0 on success."""
 
     def __init__(self, task_id, node, category, points, description, checks,
                  requires_persistence=True):
@@ -47,7 +47,7 @@ class PaperTask(BaseTask):
         self.checks_spec = tuple(checks)
         self.requires_persistence = requires_persistence
         self.requires_lab_machine = node == 2
-        self.tags = ["krishan-fixed-paper", f"node-{node}"]
+        self.tags = ["krishan-exact-paper", f"node-{node}"]
         self.hints = []
 
     def generate(self, **params):
@@ -63,7 +63,7 @@ class PaperTask(BaseTask):
                 score += spec.points
             message = spec.success if passed else spec.failure
             if not passed and output:
-                message += f" ({output.strip()[:180]})"
+                message += f" ({output.strip()[:220]})"
             results.append(ValidationCheck(
                 spec.name, passed, spec.points if passed else 0, message,
                 max_points=spec.points))
@@ -90,8 +90,7 @@ class RootRecoveryTask(PaperTask):
             result = ValidationCheck(
                 "root_recovery", False, 0, error or "Recovery not validated",
                 max_points=self.points)
-            return ValidationResult(
-                self.id, False, 0, self.points, [result])
+            return ValidationResult(self.id, False, 0, self.points, [result])
         weights = {"password_changed": 10, "rebooted": 5,
                    "shadow_context": 5}
         rendered = []
@@ -105,189 +104,234 @@ class RootRecoveryTask(PaperTask):
             rendered.append(ValidationCheck(
                 name, bool(passed), points if passed else 0, message,
                 max_points=points))
-        return ValidationResult(
-            self.id, score >= self.points * 0.70, score, self.points, rendered)
+        return ValidationResult(self.id, score >= self.points * 0.70,
+                                score, self.points, rendered)
 
 
 def C(name, points, script, success, failure, remote=False):
     return ShellCheck(name, points, script, success, failure, remote)
 
 
+NODE1_REPO_BASEOS = "http://content.example.com/rhel9/x86_64/dvd/BaseOS"
+NODE1_REPO_APPSTREAM = "http://content.example.com/rhel9/x86_64/dvd/AppStream"
+
+
 def build_exam_tasks():
-    """Return the fixed paper in exam order: node 1, then node 2."""
+    """Return the supplied paper in exact exam order: node1 then node2."""
     tasks = [
-        PaperTask("n1_01_network", 1, "networking", 15,
-            "On node 1, set the persistent hostname to node1.practice9.example.test. "
-            "Create or update a NetworkManager profile for dummy0 with IPv4 address "
-            "192.168.56.101/24, gateway 192.168.56.1, DNS 192.168.56.1, manual IPv4, "
-            "and autoconnect enabled. Do not change the VM's management interface.", [
-                C("hostname", 5, "test \"$(hostnamectl --static)\" = node1.practice9.example.test",
-                  "Persistent hostname is correct", "Persistent hostname is incorrect"),
-                C("address", 5, "nmcli -g ipv4.addresses con show exam-dummy | grep -Fxq 192.168.56.101/24",
-                  "IPv4 address is correct", "Connection exam-dummy does not have the required address"),
-                C("network_profile", 5, "test \"$(nmcli -g ipv4.method con show exam-dummy)\" = manual && test \"$(nmcli -g connection.autoconnect con show exam-dummy)\" = yes",
-                  "Network profile is persistent", "Manual addressing/autoconnect is not configured"),
+        PaperTask("n1_01_network_hostname", 1, "networking", 15,
+            "On node1, configure hostname node1.domain7.example.com. Configure the existing NetworkManager connection for IPv4 address 172.24.7.10/24, gateway 172.24.7.254, DNS 172.24.7.254, manual IPv4, and autoconnect enabled.", [
+                C("hostname", 4, "test \"$(hostnamectl --static)\" = node1.domain7.example.com",
+                  "Hostname is correct", "Hostname is not node1.domain7.example.com"),
+                C("ipv4_address", 4, "ip -4 addr show | grep -q '172.24.7.10/24'",
+                  "IPv4 address is present", "172.24.7.10/24 was not found"),
+                C("gateway", 3, "ip route | grep -q 'default via 172.24.7.254'",
+                  "Default gateway is correct", "Default gateway is not 172.24.7.254"),
+                C("dns", 2, "grep -q '172.24.7.254' /etc/resolv.conf || grep -Rqs 'dns.*172.24.7.254' /etc/NetworkManager/system-connections",
+                  "DNS is configured", "DNS 172.24.7.254 was not found"),
+                C("autoconnect", 2, "nmcli -g connection.autoconnect con show | grep -qx yes",
+                  "A persistent autoconnecting profile exists", "No autoconnecting NetworkManager profile was detected"),
             ]),
+
         PaperTask("n1_02_repositories", 1, "repos", 12,
-            "On node 1, configure enabled DNF repositories named training-baseos and "
-            "training-appstream. Use http://repo.practice.example/rhel9/BaseOS and "
-            "http://repo.practice.example/rhel9/AppStream respectively. Disable GPG "
-            "checking for these isolated lab repositories.", [
-                C("baseos", 6, "dnf repolist --all 2>/dev/null | grep -q '^training-baseos.*enabled' && grep -Rqs 'baseurl=http://repo.practice.example/rhel9/BaseOS' /etc/yum.repos.d",
-                  "BaseOS repository is configured", "BaseOS repository is missing or disabled"),
-                C("appstream", 6, "dnf repolist --all 2>/dev/null | grep -q '^training-appstream.*enabled' && grep -Rqs 'baseurl=http://repo.practice.example/rhel9/AppStream' /etc/yum.repos.d",
-                  "AppStream repository is configured", "AppStream repository is missing or disabled"),
+            f"Configure DNF repositories for BaseOS at {NODE1_REPO_BASEOS} and AppStream at {NODE1_REPO_APPSTREAM}. Enable both and disable GPG checking.", [
+                C("baseos", 4, f"grep -Rqs 'baseurl={NODE1_REPO_BASEOS}' /etc/yum.repos.d && grep -Rqs '^\\[BaseOS\\]' /etc/yum.repos.d",
+                  "BaseOS repository is configured", "BaseOS repository is missing or incorrect"),
+                C("appstream", 4, f"grep -Rqs 'baseurl={NODE1_REPO_APPSTREAM}' /etc/yum.repos.d && grep -Rqs '^\\[AppStream\\]' /etc/yum.repos.d",
+                  "AppStream repository is configured", "AppStream repository is missing or incorrect"),
+                C("enabled_gpgcheck", 4, "awk 'BEGIN{RS=\"\"} /\\[(BaseOS|AppStream)\\]/ {if ($0 !~ /enabled[[:space:]]*=[[:space:]]*1/ || $0 !~ /gpgcheck[[:space:]]*=[[:space:]]*0/) bad=1} END{exit bad}' /etc/yum.repos.d/*.repo",
+                  "Repositories are enabled with gpgcheck disabled", "Repository enabled/gpgcheck settings are incorrect"),
             ]),
-        PaperTask("n1_03_web_security", 1, "selinux", 18,
-            "An Apache service on node 1 is configured for TCP ports 80 and 8082. "
-            "Make the service start successfully under enforcing SELinux and permit "
-            "both ports through the firewall. Preserve the standard HTTP port.", [
-                C("service", 6, "systemctl is-active --quiet httpd", "Apache is active", "Apache is not active"),
-                C("selinux_port", 6, "semanage port -l | awk '$1==\"http_port_t\" && $2==\"tcp\" {$1=$2=\"\"; print}' | grep -qw 8082",
-                  "SELinux permits Apache on 8082", "Port 8082 is not labelled http_port_t"),
-                C("firewall", 6, "firewall-cmd --quiet --query-service=http && firewall-cmd --quiet --query-port=8082/tcp && firewall-cmd --quiet --permanent --query-service=http && firewall-cmd --quiet --permanent --query-port=8082/tcp",
-                  "Runtime and permanent firewall rules are correct", "Required firewall rules are incomplete"),
+
+        PaperTask("n1_03_httpd_selinux_firewall", 1, "selinux", 18,
+            "Configure the web server to serve content from /var/www/html on TCP ports 80 and 82. Ensure httpd is active, SELinux permits port 82 as http_port_t, and the firewall allows HTTP and 82/tcp.", [
+                C("httpd_active", 4, "systemctl is-active --quiet httpd",
+                  "httpd is active", "httpd is not active"),
+                C("httpd_listens_82", 4, "ss -ltnp 2>/dev/null | grep -q ':82[[:space:]]' || grep -RqsE '^[[:space:]]*Listen[[:space:]]+82' /etc/httpd/conf /etc/httpd/conf.d",
+                  "httpd is configured/listening on port 82", "httpd port 82 was not found"),
+                C("selinux_port", 4, "semanage port -l | awk '$1==\"http_port_t\" && $2==\"tcp\" {$1=$2=\"\"; print}' | grep -qw 82",
+                  "SELinux permits httpd on 82/tcp", "82/tcp is not labelled http_port_t"),
+                C("firewall_http", 3, "firewall-cmd --quiet --query-service=http && firewall-cmd --quiet --permanent --query-service=http",
+                  "HTTP firewall service is allowed", "HTTP firewall service is not allowed runtime/permanent"),
+                C("firewall_82", 3, "firewall-cmd --quiet --query-port=82/tcp && firewall-cmd --quiet --permanent --query-port=82/tcp",
+                  "82/tcp firewall port is allowed", "82/tcp firewall port is not allowed runtime/permanent"),
             ]),
-        PaperTask("n1_04_accounts", 1, "users_groups", 15,
-            "Create group opsadmin. Create users leon and nadia with opsadmin as a "
-            "supplementary group. Create user mina with a non-interactive shell and "
-            "without opsadmin membership. Assign a usable password to all three users.", [
-                C("group_members", 6, "getent group opsadmin >/dev/null && id -nG leon | grep -qw opsadmin && id -nG nadia | grep -qw opsadmin",
-                  "Group memberships are correct", "opsadmin or required memberships are missing"),
-                C("restricted_user", 5, "getent passwd mina | cut -d: -f7 | grep -Eq '(nologin|false)$' && ! id -nG mina | grep -qw opsadmin",
-                  "Restricted user is correct", "mina has an interactive shell or incorrect membership"),
-                C("passwords", 4, "for u in leon nadia mina; do passwd -S $u | awk '$2==\"P\" {ok=1} END{exit !ok}' || exit 1; done",
-                  "All accounts have passwords", "One or more accounts have no usable password"),
+
+        PaperTask("n1_04_users_groups", 1, "users_groups", 16,
+            "Create group adminuser. Create users harry and natasha with adminuser as a supplementary group. Create user sarah with no interactive shell and without adminuser membership. Set passwords to postroll.", [
+                C("group", 3, "getent group adminuser >/dev/null",
+                  "adminuser group exists", "adminuser group was not found"),
+                C("harry", 3, "id -nG harry 2>/dev/null | tr ' ' '\\n' | grep -qx adminuser",
+                  "harry is in adminuser", "harry is missing adminuser supplementary membership"),
+                C("natasha", 3, "id -nG natasha 2>/dev/null | tr ' ' '\\n' | grep -qx adminuser",
+                  "natasha is in adminuser", "natasha is missing adminuser supplementary membership"),
+                C("sarah_shell", 3, "getent passwd sarah | cut -d: -f7 | grep -Eq '(/sbin/nologin|/usr/sbin/nologin|/bin/false)$'",
+                  "sarah has no interactive shell", "sarah shell is not non-interactive"),
+                C("sarah_not_admin", 2, "! id -nG sarah 2>/dev/null | tr ' ' '\\n' | grep -qx adminuser",
+                  "sarah is not in adminuser", "sarah must not be in adminuser"),
+                C("passwords", 2, "for u in harry natasha sarah; do passwd -S $u | awk '$2==\"P\" {ok=1} END{exit !ok}' || exit 1; done",
+                  "All users have usable passwords", "One or more passwords are not set"),
             ]),
-        PaperTask("n1_05_cron", 1, "scheduling", 10,
-            "Schedule /usr/bin/logger 'RHCSA practice heartbeat' for user nadia at "
-            "14:23 every day.", [
-                C("cron", 10, "crontab -u nadia -l 2>/dev/null | grep -Eq '^23[[:space:]]+14[[:space:]]+\\*[[:space:]]+\\*[[:space:]]+\\*[[:space:]]+/usr/bin/logger[[:space:]]+([\"\x27])?RHCSA practice heartbeat'",
-                  "Daily cron job is correct", "Required cron entry was not found"),
+
+        PaperTask("n1_05_cron_natasha", 1, "scheduling", 10,
+            "Configure a cron job for natasha that runs /bin/echo Haiya every day at 14:23.", [
+                C("cron", 10, "crontab -u natasha -l 2>/dev/null | grep -Eq '^23[[:space:]]+14[[:space:]]+\\*[[:space:]]+\\*[[:space:]]+\\*[[:space:]]+/bin/echo[[:space:]]+Haiya([[:space:]]*)$'",
+                  "natasha cron job is correct", "Required natasha cron entry was not found"),
             ]),
-        PaperTask("n1_06_collaboration", 1, "permissions", 12,
-            "Create /srv/ops-share as a collaborative directory owned by group "
-            "opsadmin. Group members require full access, other users require no "
-            "access, and newly created files must inherit the opsadmin group.", [
-                C("ownership", 4, "test \"$(stat -c %G /srv/ops-share)\" = opsadmin",
-                  "Group ownership is correct", "Directory group is not opsadmin"),
-                C("permissions", 8, "mode=$(stat -c %a /srv/ops-share); test \"$mode\" = 2770",
-                  "Permissions and setgid are correct", "Expected mode 2770"),
+
+        PaperTask("n1_06_collaborative_directory", 1, "permissions", 12,
+            "Create /home/admin as a collaborative directory owned by group adminuser. Group members must have full access, others no access, and new files must inherit group adminuser.", [
+                C("exists", 3, "test -d /home/admin",
+                  "/home/admin exists", "/home/admin does not exist"),
+                C("group", 3, "test \"$(stat -c %G /home/admin)\" = adminuser",
+                  "Group owner is adminuser", "Group owner is not adminuser"),
+                C("mode", 6, "test \"$(stat -c %a /home/admin)\" = 2770",
+                  "Mode is 2770", "Expected mode 2770"),
             ]),
-        PaperTask("n1_07_fixed_uid", 1, "users_groups", 8,
-            "Create user devtest with UID 3456 and assign a usable password.", [
-                C("uid", 5, "test \"$(id -u devtest 2>/dev/null)\" = 3456", "UID is correct", "devtest with UID 3456 was not found"),
-                C("password", 3, "passwd -S devtest | awk '$2==\"P\" {ok=1} END{exit !ok}'", "Password is set", "Password is not usable"),
+
+        PaperTask("n1_07_alex_uid", 1, "users_groups", 8,
+            "Create user alex with UID 3456 and password postroll.", [
+                C("uid", 5, "test \"$(id -u alex 2>/dev/null)\" = 3456",
+                  "alex UID is 3456", "alex UID is not 3456"),
+                C("password", 3, "passwd -S alex | awk '$2==\"P\" {ok=1} END{exit !ok}'",
+                  "alex has a usable password", "alex password is not set"),
             ]),
-        PaperTask("n1_08_find_files", 1, "essential_tools", 10,
-            "Locate every regular file owned by user fileowner beneath /var/tmp/exam-source "
-            "and copy it into /root/owned-files while preserving file metadata.", [
-                C("copies", 10, "src=$(find /var/tmp/exam-source -xdev -user fileowner -type f -printf '%f\\n' | sort); dst=$(find /root/owned-files -maxdepth 1 -user fileowner -type f -printf '%f\\n' 2>/dev/null | sort); test -n \"$src\" && test \"$src\" = \"$dst\"",
-                  "All owned files were copied with ownership preserved", "Destination does not contain the complete preserved file set"),
-            ], False),
-        PaperTask("n1_09_filter_text", 1, "essential_tools", 8,
-            "From /opt/exam-assets/words.list, write every complete line containing "
-            "the text 'mesh' to /root/mesh-lines. The destination must contain no "
-            "blank lines or leading/trailing whitespace.", [
-                C("filtered_output", 8, "test -f /root/mesh-lines && diff -u <(grep 'mesh' /opt/exam-assets/words.list | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//') /root/mesh-lines",
-                  "Filtered output is exact", "Filtered file content is incomplete or incorrectly formatted"),
-            ], False),
-        PaperTask("n1_10_autofs", 1, "network_storage", 18,
-            "Configure autofs on node 1 so the remote user's NFS home exported as "
-            "node2:/exports/home/labuser is available on demand at /remote/labuser. "
-            "The mounted home must be writable by labuser.", [
-                C("autofs_config", 6, "grep -RqsE '^/remote[[:space:]]+' /etc/auto.master /etc/auto.master.d && grep -RqsE '^labuser[[:space:]]+.*node2:/exports/home/labuser' /etc/auto.*",
-                  "Autofs maps are configured", "Required master/direct map entries were not found"),
-                C("autofs_service", 4, "systemctl is-enabled --quiet autofs && systemctl is-active --quiet autofs",
-                  "Autofs is enabled and active", "Autofs is not enabled and active"),
-                C("mount", 8, "timeout 10 bash -c 'ls /remote/labuser >/dev/null' && findmnt -rn /remote/labuser >/dev/null",
-                  "Remote home mounts on demand", "Remote home did not mount at /remote/labuser"),
+
+        PaperTask("n1_08_find_aletha_files", 1, "essential_tools", 10,
+            "Find all regular files owned by user aletha and copy them to /root/find while preserving attributes.", [
+                C("destination", 3, "test -d /root/find",
+                  "/root/find exists", "/root/find does not exist"),
+                C("has_copies", 4, "test -n \"$(find /root/find -type f -user aletha -print -quit 2>/dev/null)\" || test -n \"$(find /root/find -type f -print -quit 2>/dev/null)\"",
+                  "Copied files are present", "No copied regular files were found in /root/find"),
+                C("preserve_owner", 3, "test -n \"$(find /root/find -type f -user aletha -print -quit 2>/dev/null)\"",
+                  "At least one copied file preserved aletha ownership", "Copied files do not preserve aletha ownership"),
             ]),
-        PaperTask("n1_11_archive", 1, "essential_tools", 10,
-            "Create the bzip2-compressed archive /root/local-config.tar.bz2 containing "
-            "the complete /usr/local directory tree.", [
-                C("archive", 10, "test -f /root/local-config.tar.bz2 && tar -tjf /root/local-config.tar.bz2 | grep -Eq '(^|/)usr/local/?$|^usr/local/'",
-                  "Compressed archive is valid", "Archive is missing, invalid, or lacks /usr/local"),
-            ], False),
-        PaperTask("n1_12_script", 1, "scripting", 15,
-            "Create executable script /usr/local/bin/find-special-files. When run, it "
-            "must overwrite /root/special-files with paths of regular files under "
-            "/usr/share that are at most 10 MiB and have the set-group-ID bit set.", [
-                C("script", 5, "test -x /usr/local/bin/find-special-files && head -1 /usr/local/bin/find-special-files | grep -q '^#!'",
-                  "Executable script exists", "Script is missing or not executable"),
-                C("result", 10, "/usr/local/bin/find-special-files && diff -u <(find /usr/share -type f -size -10M -perm -2000 | sort) <(sort /root/special-files)",
-                  "Script produces the required file list", "Script output does not match the requirement"),
-            ], False),
-        PaperTask("n1_13_time", 1, "time_services", 10,
-            "Configure chronyd on node 1 to use time.practice9.example.test with "
-            "iburst. Ensure chronyd is enabled and running.", [
-                C("source", 5, "grep -RqsE '^[[:space:]]*(server|pool)[[:space:]]+time\\.practice9\\.example\\.test([[:space:]]+.*)?iburst' /etc/chrony.conf /etc/chrony.d 2>/dev/null",
-                  "Chrony source is configured", "Required time source with iburst was not found"),
+
+        PaperTask("n1_09_grep_asse", 1, "essential_tools", 8,
+            "Find every word containing the string 'asse' in /usr/share/dict/words and save the result in /root/lines.", [
+                C("file_exists", 3, "test -s /root/lines",
+                  "/root/lines exists and is not empty", "/root/lines is missing or empty"),
+                C("matches_only", 3, "! grep -Ev '^[^[:space:]]*asse[^[:space:]]*$' /root/lines | grep -q .",
+                  "All output lines contain asse as complete words", "Output contains non-matching lines"),
+                C("same_as_grep", 2, "cmp -s <(grep 'asse' /usr/share/dict/words 2>/dev/null) /root/lines",
+                  "Output matches grep result", "Output does not match grep 'asse' /usr/share/dict/words"),
+            ]),
+
+        PaperTask("n1_10_autofs_remoteuser20", 1, "network_storage", 16,
+            "Configure autofs so 172.24.20.250:/home/remoteuser20 is mounted read-write on demand at /remote/remoteuser20.", [
+                C("packages_service", 3, "rpm -q autofs nfs-utils >/dev/null && systemctl is-enabled --quiet autofs && systemctl is-active --quiet autofs",
+                  "autofs and nfs-utils are installed and autofs is enabled/active", "autofs/nfs-utils or autofs service is not ready"),
+                C("master_map", 4, "grep -RqsE '^[[:space:]]*/remote[[:space:]]+' /etc/auto.master /etc/auto.master.d/*.autofs 2>/dev/null",
+                  "Master map manages /remote", "No /remote autofs master map found"),
+                C("direct_key", 4, "grep -RqsE '^remoteuser20[[:space:]]+' /etc/auto.remoteuser /etc/auto.* 2>/dev/null",
+                  "remoteuser20 key is configured", "remoteuser20 key was not found"),
+                C("nfs_target", 5, "grep -RqsE '(172\\.24\\.20\\.250|serverb|classroom\\.example\\.com):/home/remoteuser20' /etc/auto.remoteuser /etc/auto.* 2>/dev/null",
+                  "NFS target is configured", "NFS target /home/remoteuser20 was not found"),
+            ]),
+
+        PaperTask("n1_11_backup_archive", 1, "essential_tools", 8,
+            "Create a bzip2-compressed tar archive /root/backup.tar.bz2 containing /usr/local.", [
+                C("valid_bzip2_tar", 4, "tar -tjf /root/backup.tar.bz2 >/dev/null",
+                  "Archive is a valid bzip2 tar", "Archive is missing or invalid"),
+                C("contains_usr_local", 4, "tar -tjf /root/backup.tar.bz2 | grep -Eq '^(usr/local|/usr/local)'",
+                  "Archive contains /usr/local", "Archive does not contain /usr/local"),
+            ]),
+
+        PaperTask("n1_12_myscript", 1, "scripting", 12,
+            "Create executable script /usr/local/bin/myscript. The script must find regular files under /usr/share that are smaller than 10 MB and have SGID set, writing the list to /root/script.", [
+                C("exists_executable", 3, "test -x /usr/local/bin/myscript",
+                  "myscript exists and is executable", "myscript missing or not executable"),
+                C("uses_usr_share", 3, "grep -Eq 'find[[:space:]]+/usr/share|find[[:space:]].*/usr/share' /usr/local/bin/myscript",
+                  "Script searches /usr/share", "Script does not search /usr/share"),
+                C("sgid_condition", 3, "grep -Eq -- '-perm[[:space:]]+(-g=s|-2000|-02000)' /usr/local/bin/myscript",
+                  "Script checks SGID permission", "Script does not check SGID permission"),
+                C("writes_root_script", 3, "grep -q '/root/script' /usr/local/bin/myscript",
+                  "Script writes to /root/script", "Script does not write to /root/script"),
+            ]),
+
+        PaperTask("n1_13_chrony", 1, "time_services", 10,
+            "Configure time synchronization using redhat.domain7.example.com and ensure chronyd is enabled and running.", [
+                C("source", 5, "grep -REq '^[[:space:]]*(server|pool)[[:space:]]+redhat\\.domain7\\.example\\.com([[:space:]]|$)' /etc/chrony.conf /etc/chrony.d/*.conf 2>/dev/null",
+                  "Chrony source is configured", "redhat.domain7.example.com is not configured as a chrony source"),
                 C("service", 5, "systemctl is-enabled --quiet chronyd && systemctl is-active --quiet chronyd",
-                  "Chronyd is enabled and active", "Chronyd is not enabled and active"),
+                  "chronyd is enabled and active", "chronyd is not enabled and active"),
             ]),
-        PaperTask("n1_14_image", 1, "containers", 12,
-            "As user containeruser, build a local Podman image named report-tool from "
-            "/opt/exam-assets/Containerfile. Do not edit the supplied Containerfile.", [
-                C("image", 12, "runuser -u containeruser -- podman image exists localhost/report-tool:latest",
-                  "Required image exists for containeruser", "report-tool image was not found for containeruser"),
-            ], False),
-        PaperTask("n1_15_container_service", 1, "containers", 20,
-            "As user containeruser, create container report-worker from report-tool. "
-            "Map /opt/report/in to /work/in and /opt/report/out to /work/out with "
-            "SELinux-compatible labels. Configure it as a user systemd service named "
-            "container-report-worker.service that starts automatically after boot.", [
-                C("container", 6, "runuser -u containeruser -- podman inspect report-worker >/dev/null",
-                  "Container exists", "report-worker container was not found"),
-                C("mounts", 6, "runuser -u containeruser -- podman inspect report-worker --format '{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' | grep -q '/opt/report/in:/work/in' && runuser -u containeruser -- podman inspect report-worker --format '{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' | grep -q '/opt/report/out:/work/out'",
-                  "Bind mounts are correct", "One or both bind mounts are incorrect"),
-                C("service", 8, "test -f /home/containeruser/.config/systemd/user/container-report-worker.service && loginctl show-user containeruser -p Linger --value | grep -qx yes && runuser -u containeruser -- env XDG_RUNTIME_DIR=/run/user/$(id -u containeruser) systemctl --user is-enabled --quiet container-report-worker.service",
-                  "Persistent user service is enabled", "User service or lingering is not configured"),
+
+        PaperTask("n1_14_podman_image", 1, "containers", 12,
+            "As user aletha, download the unmodified Containerfile from http://domain.exam.com/rhel9/Containerfile and build a Podman image named monitor.", [
+                C("aletha_exists", 2, "id aletha >/dev/null",
+                  "aletha exists", "User aletha does not exist"),
+                C("containerfile", 3, "test -f /home/aletha/Containerfile",
+                  "Containerfile is present in aletha home", "Containerfile was not found in /home/aletha"),
+                C("monitor_image", 7, "runuser -u aletha -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman image exists monitor || podman image exists localhost/monitor'",
+                  "monitor image exists for aletha", "monitor image was not found for aletha"),
             ]),
-        RootRecoveryTask("n2_01_root_recovery", 2, "boot_recovery", 20,
-            "At the node 2 console, recover administrative access by assigning a new "
-            "root password. Boot node 2 normally afterward and ensure SELinux labels "
-            "remain correct.", []),
+
+        PaperTask("n1_15_podman_container_service", 1, "containers", 18,
+            "As user aletha, create container asciipdf from image monitor. Bind-mount /opt/input to /opt/incoming and /opt/output to /opt/processed with SELinux labeling. Configure container-asciipdf.service to start and stop with boot.", [
+                C("host_dirs", 3, "test -d /opt/input -a -d /opt/output && test \"$(stat -c %U /opt/input)\" = aletha && test \"$(stat -c %U /opt/output)\" = aletha",
+                  "Host directories exist and are owned by aletha", "Host directories missing or not owned by aletha"),
+                C("container", 4, "runuser -u aletha -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman container exists asciipdf'",
+                  "asciipdf container exists for aletha", "asciipdf container was not found for aletha"),
+                C("mounts", 4, "runuser -u aletha -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman inspect asciipdf --format \"{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}\"' | grep -q '/opt/input:/opt/incoming' && runuser -u aletha -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman inspect asciipdf --format \"{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}\"' | grep -q '/opt/output:/opt/processed'",
+                  "Container volume mounts are correct", "Container mounts are incorrect"),
+                C("systemd_user_service", 4, "test -f /home/aletha/.config/systemd/user/container-asciipdf.service && grep -q 'asciipdf' /home/aletha/.config/systemd/user/container-asciipdf.service",
+                  "container-asciipdf.service exists", "User systemd service is missing"),
+                C("linger", 3, "loginctl show-user aletha -p Linger --value | grep -qx yes",
+                  "linger is enabled for aletha", "linger is not enabled for aletha"),
+            ]),
+
+        RootRecoveryTask("n2_01_root_password", 2, "boot_recovery", 20,
+            "On node2, reset the root password to postroll using the RHEL 9 rd.break rescue procedure.", [], requires_persistence=True),
+
         PaperTask("n2_02_repositories", 2, "repos", 12,
-            "On node 2, configure the same enabled training-baseos and "
-            "training-appstream repositories used on node 1, with GPG checking "
-            "disabled for this isolated lab.", [
-                C("baseos", 6, "dnf repolist --all 2>/dev/null | grep -q '^training-baseos.*enabled'", "BaseOS repository is enabled", "BaseOS repository is not enabled", True),
-                C("appstream", 6, "dnf repolist --all 2>/dev/null | grep -q '^training-appstream.*enabled'", "AppStream repository is enabled", "AppStream repository is not enabled", True),
+            f"On node2, configure DNF repositories for BaseOS at {NODE1_REPO_BASEOS} and AppStream at {NODE1_REPO_APPSTREAM}. Enable both and disable GPG checking.", [
+                C("baseos", 6, f"grep -Rqs 'baseurl={NODE1_REPO_BASEOS}' /etc/yum.repos.d && grep -Rqs '^\\[BaseOS\\]' /etc/yum.repos.d",
+                  "BaseOS repository is configured", "BaseOS repository missing or incorrect", remote=True),
+                C("appstream", 6, f"grep -Rqs 'baseurl={NODE1_REPO_APPSTREAM}' /etc/yum.repos.d && grep -Rqs '^\\[AppStream\\]' /etc/yum.repos.d",
+                  "AppStream repository is configured", "AppStream repository missing or incorrect", remote=True),
             ]),
-        PaperTask("n2_03_resize_lv", 2, "lvm", 18,
-            "On node 2, extend logical volume /dev/ExamData/data and its existing "
-            "ext4 filesystem to 750 MiB without losing the file already stored on it.", [
-                C("lv_size", 8, "size=$(lvs --noheadings --nosuffix --units m -o lv_size ExamData/data | xargs | cut -d. -f1); test \"$size\" -ge 740", "Logical volume size is correct", "Logical volume is smaller than required", True),
-                C("filesystem", 6, "findmnt -rn /srv/existing-data >/dev/null && test $(df -Pm /srv/existing-data | awk 'NR==2 {print $2}') -ge 700", "Filesystem was grown", "Mounted filesystem was not grown", True),
-                C("data", 4, "test -s /srv/existing-data/keep-this-file", "Existing data was preserved", "Baseline data is missing", True),
+
+        PaperTask("n2_03_resize_data_lv", 2, "lvm", 16,
+            "On node2, resize the existing logical volume named data to a final size of 750 MiB without losing data. The ext4 filesystem must also be resized.", [
+                C("lv_size", 8, "size=$(lvs --noheadings --units m --nosuffix -S 'lv_name=data' -o lv_size 2>/dev/null | awk 'NR==1{print int($1)}'); test -n \"$size\" && test $size -ge 749 && test $size -le 753",
+                  "data LV final size is about 750 MiB", "data LV is not about 750 MiB", remote=True),
+                C("filesystem_ext4", 4, "lv=$(lvs --noheadings -S 'lv_name=data' -o lv_path 2>/dev/null | awk 'NR==1{print $1}'); test -n \"$lv\" && blkid -o value -s TYPE \"$lv\" | grep -qx ext4",
+                  "data filesystem is ext4", "data filesystem is not ext4", remote=True),
+                C("fs_resized", 4, "mnt=$(findmnt -rn -S $(lvs --noheadings -S 'lv_name=data' -o lv_path 2>/dev/null | awk 'NR==1{print $1}') -o TARGET 2>/dev/null); if [ -n \"$mnt\" ]; then df -m --output=size \"$mnt\" | awk 'NR==2{exit !($1>=700)}'; else lv=$(lvs --noheadings -S 'lv_name=data' -o lv_path 2>/dev/null | awk 'NR==1{print $1}'); dumpe2fs -h \"$lv\" 2>/dev/null | awk '/Block count:/{bc=$3}/Block size:/{bs=$3} END{exit !((bc*bs)/1048576>=700)}'; fi",
+                  "ext4 filesystem is resized", "ext4 filesystem was not resized", remote=True),
             ]),
-        PaperTask("n2_04_swap", 2, "swap", 15,
-            "On node 2, create an additional swap area of approximately 512 MiB "
-            "using unused space on /dev/vdb. Activate it and make it persistent. "
-            "Do not remove existing swap.", [
-                C("active_swap", 8, "swapon --show --bytes --noheadings --output SIZE | awk '$1>=500*1024*1024 && $1<=540*1024*1024 {ok=1} END{exit !ok}'", "Additional swap is active", "No active swap of approximately 512 MiB was found", True),
-                C("persistent", 7, "grep -vE '^[[:space:]]*#|^[[:space:]]*$' /etc/fstab | awk '$3==\"swap\" {ok=1} END{exit !ok}'", "Swap has a persistent fstab entry", "Persistent swap entry was not found", True),
+
+        PaperTask("n2_04_swap", 2, "swap", 14,
+            "On node2, create an additional 512 MiB swap partition, enable it immediately, and make it persistent without modifying existing swap.", [
+                C("active_swap", 7, "swapon --show --bytes --noheadings --output SIZE | awk '$1 >= 530000000 && $1 <= 545000000 {ok=1} END {exit !ok}'",
+                  "Additional 512 MiB swap is active", "No active 512 MiB swap was detected", remote=True),
+                C("fstab_swap", 7, "grep -Ev '^[[:space:]]*(#|$)' /etc/fstab | grep -Eq '[[:space:]]+swap[[:space:]]+defaults'",
+                  "Swap is persistent in /etc/fstab", "Persistent swap entry was not found", remote=True),
             ]),
-        PaperTask("n2_05_new_lvm", 2, "lvm", 20,
-            "Using unused space on /dev/vdb, create volume group ProjectVG and a "
-            "750 MiB logical volume named ProjectLV. Format it as ext3 and mount it "
-            "persistently at /srv/project.", [
-                C("lvm", 8, "lvs ProjectVG/ProjectLV >/dev/null && size=$(lvs --noheadings --nosuffix --units m -o lv_size ProjectVG/ProjectLV | xargs | cut -d. -f1); test \"$size\" -ge 740", "VG and LV are correct", "ProjectVG/ProjectLV is missing or incorrectly sized", True),
-                C("filesystem", 6, "test \"$(blkid -s TYPE -o value /dev/ProjectVG/ProjectLV)\" = ext3", "Filesystem is ext3", "Logical volume is not formatted as ext3", True),
-                C("mount", 6, "findmnt -rn /srv/project >/dev/null && grep -vE '^[[:space:]]*#' /etc/fstab | grep -qE '[[:space:]]/srv/project[[:space:]]'", "Persistent mount is correct", "Mount is not active and persistent", True),
+
+        PaperTask("n2_05_exam_lv_mount", 2, "lvm", 18,
+            "On node2, create volume group Exam and logical volume RHCSA sized 750 MiB. Format it as ext3 and mount it persistently at /root/exam.", [
+                C("vg", 3, "vgs Exam >/dev/null 2>&1",
+                  "VG Exam exists", "VG Exam does not exist", remote=True),
+                C("lv", 3, "lvs /dev/Exam/RHCSA >/dev/null 2>&1",
+                  "LV Exam/RHCSA exists", "LV /dev/Exam/RHCSA does not exist", remote=True),
+                C("size", 3, "s=$(lvs --noheadings --units m --nosuffix -o lv_size /dev/Exam/RHCSA 2>/dev/null | awk '{print int($1)}'); test -n \"$s\" && test $s -ge 749 && test $s -le 753",
+                  "LV size is about 750 MiB", "LV size is not about 750 MiB", remote=True),
+                C("ext3", 3, "blkid -o value -s TYPE /dev/Exam/RHCSA | grep -qx ext3",
+                  "Filesystem is ext3", "Filesystem is not ext3", remote=True),
+                C("mounted", 3, "findmnt -rn /root/exam | grep -Eq '/dev/mapper/Exam-RHCSA|/dev/Exam/RHCSA'",
+                  "/root/exam is mounted from Exam/RHCSA", "/root/exam is not mounted from Exam/RHCSA", remote=True),
+                C("fstab", 3, "grep -Ev '^[[:space:]]*(#|$)' /etc/fstab | grep -Eq '[[:space:]]/root/exam[[:space:]]+ext3[[:space:]]'",
+                  "Persistent /root/exam fstab entry exists", "Persistent /root/exam ext3 entry missing", remote=True),
             ]),
+
         PaperTask("n2_06_tuned", 2, "services", 10,
-            "On node 2, enable tuned and activate the profile recommended for that "
-            "virtual machine.", [
-                C("service", 4, "systemctl is-enabled --quiet tuned && systemctl is-active --quiet tuned", "Tuned is enabled and active", "Tuned is not enabled and active", True),
-                C("profile", 6, "test \"$(tuned-adm active 2>/dev/null | sed -n 's/^Current active profile: //p')\" = \"$(tuned-adm recommend 2>/dev/null)\"", "Recommended tuned profile is active", "Active tuned profile is not the recommended profile", True),
+            "On node2, install and enable tuned, then apply the tuned profile recommended for the system.", [
+                C("enabled_active", 4, "systemctl is-enabled --quiet tuned && systemctl is-active --quiet tuned",
+                  "tuned is enabled and active", "tuned is not enabled and active", remote=True),
+                C("recommended", 6, "test \"$(tuned-adm active | sed 's/.*: //')\" = \"$(tuned-adm recommend)\"",
+                  "Recommended tuned profile is active", "Active tuned profile is not the recommended profile", remote=True),
             ]),
     ]
-    for index, task in enumerate(tasks, 1):
-        task.task_order = index
     return tasks
-
-
-PAPER_TASK_COUNT = 21
-PAPER_MAX_SCORE = sum(t.points for t in build_exam_tasks())
