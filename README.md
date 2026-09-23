@@ -1,68 +1,56 @@
-# Krishan RHCSA v9 Simulator
+# Krishan Exact RHCSA v9 Simulator
 
-A deterministic, original-worded two-node RHCSA (EX200 v9) mock exam. It
-contains one fixed 21-task paper rather than a randomized question bank.
+A deterministic two-node RHCSA v9 practice simulator aligned to the exact 21-question paper used in Krishan's practice session.
 
-This project is derived from
-[TroggoMan/rhcsa-simulator](https://github.com/TroggoMan/rhcsa-simulator)
-under the MIT License. The fixed paper in this edition was independently
-written from public RHCSA v9 objectives; it does not reproduce a real exam or
-third-party answer sheet.
+This project is derived from [TroggoMan/rhcsa-simulator](https://github.com/TroggoMan/rhcsa-simulator) under the MIT License and from the uploaded `krishan-rhcsa-v9-simulator` structure. This edited build replaces the previous generic mock questions with the exact paper tasks and validators.
 
 ## Coverage
 
-- Node 1: networking, repositories, Apache/SELinux/firewalld, accounts, cron,
-  permissions, file tools, autofs/NFS, archives, scripting, chrony, and
-  rootless Podman/systemd.
-- Node 2: console root recovery, repositories, LVM/filesystem growth, swap,
-  persistent ext3 storage, and tuned.
-- 21 ordered tasks, three-hour timer, browser task panel, and partial scoring.
+- Node1: network/hostname, repositories, Apache on 80/82 with SELinux and firewall, users/groups, cron, collaborative directory, UID user, find/copy files, grep, autofs, archive, scripting, chrony, and rootless Podman image/container/systemd.
+- Node2: root password reset, repositories, resize existing LV `data`, add persistent swap, create `Exam/RHCSA` ext3 mount, and tuned recommended profile.
+- 21 ordered tasks, 180-minute timer, browser task panel, and partial scoring.
 
 ## Required lab
 
 Use two disposable RHEL 9, Rocky Linux 9, or AlmaLinux 9 VMs. Take snapshots.
 
-- Node 1: 2 vCPU, 4 GiB RAM, 20 GiB OS disk.
-- Node 2: 2 vCPU, 4 GiB RAM, 20 GiB OS disk, plus an unused disk of at least
-  3 GiB exposed as `/dev/vdb`.
-- Node 1 must reach node 2 over SSH.
-- Keep console access to node 2 for boot recovery.
+- Node1: 2 vCPU, 4 GiB RAM, 20 GiB OS disk.
+- Node2: 2 vCPU, 4 GiB RAM, 20 GiB OS disk, plus an unused disk of at least 3 GiB exposed as `/dev/vdb` or another clearly unused disk.
+- Node1 must reach node2 over SSH if you want remote validation for Node2.
+- Keep console access to node2 for the root password reset task.
 
-Never run this on a production server or daily-use workstation. The exam
-changes users, services, firewall rules, SELinux, storage, mounts, and boot
-state.
+Never run this on a production server or daily-use workstation. The exam changes users, services, firewall rules, SELinux, storage, mounts, networking, containers, and boot state.
 
-## Install on node 1
+## Install on node1
 
 ```bash
 sudo -i
-git clone https://github.com/Krishan195/krishan-rhcsa-v9-simulator.git
+git clone <your-repo-url>
 cd krishan-rhcsa-v9-simulator
 ./install.sh
 ```
 
-Install the required packages on both VMs:
+Install useful packages on both VMs:
 
 ```bash
 dnf install -y httpd policycoreutils-python-utils firewalld NetworkManager \
-  chrony cronie autofs nfs-utils lvm2 podman tuned bzip2
+  chrony cronie autofs nfs-utils lvm2 podman tuned bzip2 tar wget
 ```
 
-## Link and prepare node 2
+## Link and prepare node2
 
-Run on node 1, replacing the address with node 2's management IP:
+Run on node1, replacing the address with node2's management IP or hostname:
 
 ```bash
-sudo rhcsa-simulator --link-node2 192.168.56.102
+sudo rhcsa-simulator --link-node2 serverb
 sudo rhcsa-simulator --prepare-lab
 ```
 
-Preparation creates safe source files, a dummy network profile, container
-assets, the NFS export, and a loop-backed node-2 resize exercise. It does not
-partition or format `/dev/vdb`; that disposable disk is reserved for the exam.
-Take fresh snapshots of both VMs after preparation.
+Preparation creates safe practice artifacts only. It creates sample files owned by `aletha`, a dictionary file if missing, a local Containerfile copy for offline practice, an NFS export on node2 for local autofs practice, and a loop-backed existing LV named `data` on node2. It does not solve the tasks.
 
-## Start
+Take fresh VM snapshots after preparation.
+
+## Start exam mode
 
 ```bash
 sudo rhcsa-simulator --exam
@@ -74,21 +62,18 @@ Terminal-only mode:
 sudo rhcsa-simulator --exam --no-gui
 ```
 
-The browser panel uses port 8080. The guarded node-2 recovery scenario verifies
-key-based SSH before changing the root password and preserves recovery state.
+## Exact paper files
 
-## Lab notes
+- `EXACT_EXAM.md` — exact question list and run notes.
+- `docs/EXACT-PAPER-COMMAND-GUIDE.md` — private study guide with command examples.
+- `docs/RHEL-9-RHCSA-Exam-Paper.pdf` — uploaded paper reference already included in the repo.
 
-- The repository and time-server hostnames are reserved training names. Provide
-  matching private services if live connectivity is required.
-- Cache the UBI image before disconnecting the lab:
+## Important lab notes
 
-  ```bash
-  sudo -u containeruser podman pull registry.access.redhat.com/ubi9/ubi-minimal
-  ```
-- Revert both VM snapshots after an attempt for the most reliable cleanup.
+- The real paper uses training hostnames/IPs such as `content.example.com`, `redhat.domain7.example.com`, and `172.24.20.250`. Your practice lab may need DNS/hosts entries or local substitutions.
+- For your offline Podman lab, the public Red Hat registry may not resolve. The study guide includes the real exam command flow; use a local base image workaround only for practice.
+- Revert both VM snapshots after each full attempt for clean scoring.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Retain the existing copyright and license notice
-when redistributing modified copies.
+MIT. See [LICENSE](LICENSE). Retain the existing copyright and license notice when redistributing modified copies.
